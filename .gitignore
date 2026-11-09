@@ -1,0 +1,15 @@
+# Secretos: nunca subir la clave de API
+.env
+
+# Entorno y caches
+.venv/
+__pycache__/
+*.pyc
+
+# Biblioteca LDraw (se descarga aparte)
+ldraw/
+
+# Generado por la demo
+demo/cache/
+demo/records_live/
+demo/inventario.json

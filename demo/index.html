@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Build What You Have</title>
+<style>
+:root{--pur:#4b2e83;--lil:#eee9f7;--mid:#d8cfec;--ink:#28282d;--mut:#64646e;--ok:#1f7a4d;--bad:#b3261e;--line:#e0dae9;--card:#fff;--bg:#f8f6fb}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,"Segoe UI",Arial,sans-serif}
+header{background:var(--pur);color:#fff;padding:18px 28px}
+header h1{margin:0;font-size:26px}
+header p{margin:2px 0 0;opacity:.88}
+main{display:grid;grid-template-columns:330px 1fr;gap:20px;padding:20px 28px;max-width:1500px;margin:auto}
+@media(max-width:900px){main{grid-template-columns:1fr;padding:16px}}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:20px}
+h2{font-size:18px;margin:0 0 10px;color:var(--pur)}
+.step{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--pur);color:#fff;font-size:14px;margin-right:6px}
+.row{display:grid;grid-template-columns:18px 1fr 32px 30px 32px;align-items:center;gap:6px;padding:3px 0;font-size:15px}
+.sw{width:16px;height:16px;border-radius:3px;border:1px solid #0003}
+button{font:inherit;border:1px solid var(--pur);background:#fff;color:var(--pur);border-radius:8px;padding:5px 10px;cursor:pointer}
+button.pri{background:var(--pur);color:#fff;padding:10px 18px;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #8a6fc4;outline-offset:1px}
+.q{text-align:center;font-variant-numeric:tabular-nums;font-weight:600}
+.total{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-weight:600}
+.add{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+select,input[type=text]{font:inherit;padding:7px;border:1px solid var(--line);border-radius:8px}
+form{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+form input[type=text]{flex:1;min-width:220px;padding:10px 12px;font-size:18px}
+.note{color:var(--mut);font-size:14px;margin:8px 0 0}
+.warn{background:#fff3c4;border:1px solid #e7cf72;padding:8px 12px;border-radius:8px;margin:0 0 10px;font-size:15px}
+.job{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+.tag{font-size:13px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--lil);color:var(--pur)}
+.tag.ok{background:#dff3e8;color:var(--ok)}.tag.no{background:#fbe3e1;color:var(--bad)}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.filters button[aria-pressed=true]{background:var(--pur);color:#fff}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:12px}
+.card{padding:0;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;text-align:left;color:var(--ink)}
+.card img{display:block;width:100%;aspect-ratio:1}
+.card div{padding:8px 10px;font-size:14px}
+.card b{display:block;font-size:15px}
+dialog{border:0;border-radius:14px;padding:22px;width:min(860px,94vw);max-height:92vh}
+dialog::backdrop{background:#0006}
+.detail{display:grid;grid-template-columns:260px 1fr;gap:22px}
+@media(max-width:720px){.detail{grid-template-columns:1fr}}
+.detail img{width:100%;border-radius:10px}
+.nav{display:flex;align-items:center;gap:10px;margin:10px 0}
+.close{float:right}
+ul.parts{margin:8px 0;padding:0;list-style:none;font-size:15px}
+ul.parts li{display:flex;gap:8px;align-items:center;padding:2px 0}
+svg{max-width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+<header><h1>Build What You Have</h1><p>Pide algo y una IA lo diseña usando solo las piezas que tienes.</p></header>
+<main>
+<div>
+<section aria-labelledby="h-inv">
+<h2 id="h-inv"><span class="step">1</span>Mis piezas</h2>
+<div id="inv"></div>
+<div class="total" id="tot"></div>
+<div class="add">
+<select id="np" aria-label="Tipo de pieza"></select>
+<select id="nc" aria-label="Color"></select>
+<button id="addb">Agregar</button>
+</div>
+<p class="note">La galería se actualiza según estas piezas.</p>
+</section>
+</div>
+<div>
+<section aria-labelledby="h-req">
+<h2 id="h-req"><span class="step">2</span>¿Qué quieres construir?</h2>
+<p class="warn" id="nokey" hidden>La generación está desactivada: falta la clave de API en <code>.env</code>. La galería y el conteo sí funcionan.</p>
+<form id="f">
+<input type="text" id="req" maxlength="80" placeholder="Por ejemplo: un perro" aria-label="Pedido">
+<button class="pri" id="go">Diseñar</button>
+<label><input type="checkbox" id="most"> Aprovechar la mayoría de mis piezas</label>
+</form>
+<div id="jobs"></div>
+</section>
+<section aria-labelledby="h-gal">
+<h2 id="h-gal"><span class="step">3</span>Diseños</h2>
+<div class="filters" id="fil"></div>
+<div class="grid" id="grid"></div>
+</section>
+</div>
+</main>
+<dialog id="dlg" aria-label="Detalle del diseño"><div id="dc"></div></dialog>
+<script>
+const $=s=>document.querySelector(s), esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let S,D=[],group='Puedo armar',timer;
+const api=async(u,b)=>{const r=await fetch(u,b?{method:'POST',body:JSON.stringify(b)}:undefined);const j=await r.json();if(!r.ok)throw new Error(j.error||'Error');return j};
+const pname=p=>S.parts[p], cname=c=>S.colors[c].name, chex=c=>S.colors[c].hex;
+
+function drawInv(){
+ $('#inv').innerHTML=S.inventory.map((r,i)=>`<div class="row"><span class="sw" style="background:${chex(r.color)}"></span><span>${pname(r.part)} ${cname(r.color)}</span><button data-i="${i}" data-d="-1" aria-label="Quitar una">−</button><span class="q">${r.qty}</span><button data-i="${i}" data-d="1" aria-label="Agregar una">+</button></div>`).join('');
+ $('#tot').textContent=`Total: ${S.inventory.reduce((a,r)=>a+r.qty,0)} piezas`;
+}
+async function saveInv(){await api('/api/inventory',{inventory:S.inventory});await loadD()}
+$('#inv').onclick=e=>{const b=e.target.closest('button');if(!b)return;const r=S.inventory[+b.dataset.i];r.qty=Math.max(0,r.qty+ +b.dataset.d);drawInv();saveInv()};
+$('#addb').onclick=()=>{const part=$('#np').value,color=+$('#nc').value;let r=S.inventory.find(x=>x.part==part&&x.color==color);if(r)r.qty++;else S.inventory.push({part,color,qty:1});drawInv();saveInv()};
+
+function drawFil(){
+ const gs=['Puedo armar','Todos',...new Set(D.map(d=>d.group))];
+ $('#fil').innerHTML=gs.map(g=>`<button aria-pressed="${g==group}" data-g="${esc(g)}">${esc(g)}</button>`).join('');
+}
+$('#fil').onclick=e=>{const b=e.target.closest('button');if(b){group=b.dataset.g;drawFil();drawGrid()}};
+function drawGrid(){
+ const L=D.filter(d=>group=='Todos'||(group=='Puedo armar'?d.ok:d.group==group));
+ $('#grid').innerHTML=L.length?L.map(d=>`<button class="card" data-id="${d.id}"><img src="/img/${d.id}.png" alt="${esc(d.title)}" loading="lazy"><div><b>${esc(d.title)}</b>${d.used} piezas · ${esc(d.group)}<br><span class="tag ${d.ok?'ok':'no'}">${d.ok?'Te alcanza':'Faltan '+d.missing.reduce((a,m)=>a+m.need-m.have,0)}</span></div></button>`).join(''):'<p class="note">Con estas piezas no alcanza para ningún diseño guardado.</p>';
+}
+$('#grid').onclick=e=>{const b=e.target.closest('.card');if(b)openD(b.dataset.id)};
+async function loadD(){D=await api('/api/designs');drawFil();drawGrid()}
+
+function layer(B,k){
+ const c=30,minx=Math.min(...B.map(b=>b.x)),maxx=Math.max(...B.map(b=>b.x+b.sx)),minz=Math.min(...B.map(b=>b.z)),maxz=Math.max(...B.map(b=>b.z+b.sz));
+ const W=(maxx-minx)*c,H=(maxz-minz)*c,X=b=>(maxx-b.x-b.sx)*c,Y=b=>(maxz-b.z-b.sz)*c;
+ const prev=B.filter(b=>b.level==k-1).map(b=>`<rect x="${X(b)}" y="${Y(b)}" width="${b.sx*c}" height="${b.sz*c}" fill="${chex(b.color)}" opacity=".18" stroke="#999"/>`).join('');
+ const cur=B.filter(b=>b.level==k).map(b=>{let s=`<rect x="${X(b)+1}" y="${Y(b)+1}" width="${b.sx*c-2}" height="${b.sz*c-2}" rx="3" fill="${chex(b.color)}" stroke="#0005"/>`;for(let i=0;i<b.sx;i++)for(let j=0;j<b.sz;j++)s+=`<circle cx="${X(b)+c*(i+.5)}" cy="${Y(b)+c*(j+.5)}" r="8" fill="#fff" fill-opacity=".22" stroke="#0003"/>`;return s}).join('');
+ return `<svg viewBox="-4 -4 ${W+8} ${H+8}" width="${Math.min(W+8,420)}" role="img" aria-label="Capa ${k+1}, vista desde arriba">${prev}${cur}</svg>`;
+}
+async function openD(id){
+ const d=await api('/api/design/'+id),levels=[...new Set(d.bricks.map(b=>b.level))].sort((a,b)=>a-b);let i=0;
+ const draw=()=>{
+  const k=levels[i],cnt={};d.bricks.filter(b=>b.level==k).forEach(b=>{const K=b.part+'|'+b.color;cnt[K]=(cnt[K]||0)+1});
+  const miss=d.missing.map(m=>`<li>Faltan ${m.need-m.have} × ${pname(m.part)||m.part} ${S.colors[m.color]?cname(m.color):m.color}</li>`).join('');
+  $('#dc').innerHTML=`<button class="close" id="x">Cerrar</button><h2>${esc(d.title)}</h2><div class="detail"><div><img src="/img/${d.id}.png" alt=""><p><span class="tag ${d.ok?'ok':'no'}">${d.ok?'Te alcanza':'No te alcanza'}</span></p><p>Usa <b>${d.used}</b> de tus <b>${d.owned}</b> piezas.</p><ul class="parts">${miss}</ul><p class="note">${esc(d.group)}</p></div><div><div class="nav"><button id="pv" ${i==0?'disabled':''}>Anterior</button><b>Capa ${i+1} de ${levels.length}</b><button id="nx" ${i==levels.length-1?'disabled':''}>Siguiente</button></div>${layer(d.bricks,k)}<p class="note">Vista desde arriba, con el frente abajo. Lo tenue es la capa anterior.</p><ul class="parts">${Object.entries(cnt).map(([K,n])=>{const[p,c]=K.split('|');return `<li><span class="sw" style="background:${chex(c)}"></span>${n} × ${pname(p)} ${cname(c)}</li>`}).join('')}</ul></div></div>`;
+  $('#x').onclick=()=>$('#dlg').close();$('#pv').onclick=()=>{i--;draw()};$('#nx').onclick=()=>{i++;draw()};
+ };
+ draw();$('#dlg').showModal();
+}
+
+const LABEL={queued:'En cola',running:'Diseñando…',done:'Listo',rejected:'Se pasó de tus piezas',failed:'Falló'};
+async function loadJ(){
+ const J=await api('/api/jobs');
+ $('#jobs').innerHTML=J.length?'<div style="margin-top:12px">'+J.map(j=>{const t=j.started?Math.round((j.ended||Date.now()/1000)-j.started):0;const cls=j.status=='done'?'ok':(j.status=='failed'||j.status=='rejected')?'no':'';return `<div class="job"><span><b>${esc(j.request)}</b> ${t?`<span class="note">${t} s</span>`:''}${j.error?`<br><span class="note">${esc(j.error)}</span>`:''}</span><span><span class="tag ${cls}">${LABEL[j.status]}</span> ${j.design?`<button data-id="${j.design}">Ver</button>`:''}</span></div>`}).join('')+'</div>':'';
+ const busy=J.some(j=>j.status=='queued'||j.status=='running');
+ if(J.some(j=>j.design&&!D.find(d=>d.id==j.design)))await loadD();
+ clearTimeout(timer);if(busy)timer=setTimeout(loadJ,2500);
+}
+$('#jobs').onclick=e=>{const b=e.target.closest('button[data-id]');if(b)openD(b.dataset.id)};
+$('#f').onsubmit=async e=>{e.preventDefault();const request=$('#req').value.trim();if(!request)return;try{await api('/api/generate',{request,use_most:$('#most').checked});$('#req').value='';loadJ()}catch(x){alert(x.message)}};
+
+(async()=>{
+ S=await api('/api/state');drawInv();
+ $('#np').innerHTML=Object.entries(S.parts).map(([p,n])=>`<option value="${p}">${n}</option>`).join('');
+ $('#nc').innerHTML=Object.entries(S.colors).map(([c,v])=>`<option value="${c}">${v.name}</option>`).join('');
+ if(!S.key){$('#nokey').hidden=false;$('#go').disabled=true}
+ await loadD();loadJ();
+})();
+</script>
+</body>
+</html>
