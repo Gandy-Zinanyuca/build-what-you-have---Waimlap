@@ -1,12 +1,14 @@
 """Demo local de Build What You Have. Solo escucha en esta laptop (127.0.0.1)."""
-import json, os, re, shutil, subprocess, sys, threading, time, uuid
+import base64, io, json, os, re, shutil, subprocess, sys, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
+import cv2
 import numpy as np
 
 import bricks as B
+import vision as V
 
 DEMO = Path(__file__).resolve().parent
 ROOT = DEMO.parent
@@ -15,9 +17,11 @@ LIVE = DEMO / "records_live"
 CACHE = DEMO / "cache"
 INV_FILE = DEMO / "inventario.json"
 EXE = shutil.which("brickwright", path=str(Path(sys.executable).parent)) or "brickwright"
-MODEL = os.environ.get("DEMO_MODEL", "anthropic/claude-haiku-5-5")
+CLAUDE = shutil.which("claude")
+MODEL = os.environ.get("DEMO_MODEL", "haiku")
 MAX_PARALLEL = 2
 TIMEOUT = 600
+GRACE = 20  # segundos que se espera al agente despues de finalizar el diseño
 ID_RE = re.compile(r"^[\w-]{5,120}$")
 
 SETS = [("pedidos.tsv", "Solo la lista"), ("pedidos_b.tsv", "Usa muchas"),
@@ -90,44 +94,149 @@ def read_env():
     return values
 
 
-def read_key():
-    return read_env().get("ANTHROPIC_API_KEY") or None
+def child_env():
+    """Entorno para los procesos hijos: usa la sesion de Claude Code, nunca una clave de API."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
+    git_bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if git_bash:
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env.update(LDRAW_LIBRARY_PATH=str(ROOT / read_env().get("LDRAW_LIBRARY_PATH", "ldraw")), PYTHONUTF8="1", PYTHONIOENCODING="utf8")
+    return env
+
+
+def friendly(text):
+    """Convierte un error tecnico en un mensaje entendible."""
+    low = " ".join(text.lower().split())
+    if "hit your" in low or "usage limit" in low or "limit reached" in low:
+        return "Se alcanzó el límite de uso de tu plan de Claude. Intenta cuando se renueve."
+    if "not logged in" in low or "/login" in low or "authentication" in low:
+        return "Claude Code no tiene la sesión iniciada en esta laptop."
+    if "rate limit" in low or "overloaded" in low:
+        return "El servicio está saturado. Intenta de nuevo en un momento."
+    return None
+
+
+TASK = """Create a LEGO build with BrickWright for one request. Work only on this file: {build}. Do not read or change any other project file.
+build.py already contains a test named "inventory" that reports bricks over the limit and bricks still available: keep that test, do not weaken it, and repair the build when it fails.
+
+Run these commands exactly as shown, one per Bash call, without cd or export:
+- Read instructions once: brickwright external instructions
+- Check: brickwright external validate {rid}
+- Picture: brickwright external render {rid}   (then view {png})
+- Finish: brickwright external finalize {rid}
+
+Request and allowed bricks:
+{prompt}
+
+Follow the BrickWright instructions: edit build.py, validate, repair, render, finalize.
+The build must be recognizable as the requested object, not just a stack of bricks: give it the object's real proportions (e.g. a table needs a flat wide top and legs, not a tall tower) and check the render for this before finalizing.
+Use at most 8 validate calls. If the build is still not connected after 4 validate calls, simplify its SHAPE while keeping it recognizable (fewer bricks, but still proportioned like the object), not by stacking everything into one tall column. Always finish with finalize."""
+
+
+def is_finalized(record):
+    try:
+        return json.loads((record / "meta.json").read_text(encoding="utf8")).get("finalized") is True
+    except (OSError, ValueError):
+        return False
+
+
+def stop_tree(proc):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    else:
+        proc.kill()
+
+
+def run_agent(cmd, record, folder, env):
+    """Corre al agente y lo detiene si, ya finalizado el diseño, el proceso no termina solo."""
+    limit = time.time() + TIMEOUT
+    done_at = None
+    with open(folder / "run.log", "w", encoding="utf8") as log:
+        proc = subprocess.Popen(cmd, cwd=str(folder), env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, encoding="utf8", errors="replace")
+        while proc.poll() is None:
+            now = time.time()
+            if now > limit:
+                stop_tree(proc)
+                raise subprocess.TimeoutExpired(cmd, TIMEOUT)
+            if done_at is None and is_finalized(record):
+                done_at = now
+            if done_at is not None and now - done_at > GRACE:
+                stop_tree(proc)
+                proc.wait(timeout=20)
+                break
+            time.sleep(2)
+    return proc
 
 
 def run_job(jid, request, rows, min_bricks):
     job = jobs[jid]
-    key = read_key()
     with slots:
         job.update(status="running", started=time.time())
         folder = LIVE / jid
         folder.mkdir(parents=True, exist_ok=True)
         prompt = f"{request}. " + B.inventory_prompt(rows, min_bricks)
-        env = {**os.environ, "ANTHROPIC_API_KEY": key, "LDRAW_LIBRARY_PATH": str(ROOT / read_env().get("LDRAW_LIBRARY_PATH", "ldraw")), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf8"}
-        cmd = [str(EXE), "generate", prompt, "--records-dir", str(folder), "--model", MODEL,
-               "--max-validations", "12", "--max-cost", "0.50"]
+        env = {**child_env(), "BRICKWRIGHT_RECORDS_DIR": str(folder)}
         try:
-            with open(folder / "run.log", "w", encoding="utf8") as log:
-                proc = subprocess.run(cmd, cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT, timeout=TIMEOUT)
-            metas = list(folder.glob("*/meta.json"))
-            if not metas or not (metas[0].parent / "out" / "build.ldr").exists():
-                tail = (folder / "run.log").read_text(encoding="utf8", errors="replace")[-400:].replace(key, "***")
-                job.update(status="failed", error=f"No se generó el diseño (código {proc.returncode}). {tail}")
+            subprocess.run([EXE, "external", "init", prompt], cwd=str(folder), env=env, capture_output=True, timeout=60, check=True)
+            record = next(folder.glob("*/build.py")).parent
+            rid = record.name
+            build_py = record / "build.py"
+            build_py.write_text(B.add_inventory_test(build_py.read_text(encoding="utf8"), rows, min_bricks), encoding="utf8")
+            task = TASK.format(build=record / "build.py", rid=rid, png=record / "out" / "build.png", prompt=prompt)
+            cmd = [CLAUDE, "-p", task, "--model", MODEL, "--no-session-persistence", "--strict-mcp-config",
+                   "--allowedTools", "Read", "Edit", "Write", "Bash(brickwright external *)"]
+            proc = run_agent(cmd, record, folder, env)
+            if not (record / "out" / "build.ldr").exists() or not (record / "out" / "build.png").exists():
+                text = (folder / "run.log").read_text(encoding="utf8", errors="replace")
+                job.update(status="failed", error=friendly(text) or f"No se generó el diseño (código {proc.returncode}). Detalle en demo/records_live/{jid}/run.log")
                 return
-            meta = metas[0].parent
-            data = json.loads((meta / "meta.json").read_text(encoding="utf8"))
+            data = json.loads((record / "meta.json").read_text(encoding="utf8"))
             data["demo_title"] = request
-            (meta / "meta.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf8")
+            (record / "meta.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf8")
             with lock:
-                d = add_design(meta.name, meta, request[:40], "En vivo")
+                d = add_design(rid, record, request[:40], "En vivo")
             result = B.check(d["count"], inv_map(rows))
-            job.update(status="done" if result["ok"] else "rejected", design=meta.name, check=result,
-                       valid=data.get("status") == "valid")
+            job.update(status="done" if result["ok"] else "rejected", design=rid, check=result, valid=data.get("status") == "valid")
         except subprocess.TimeoutExpired:
             job.update(status="failed", error="Se agotó el tiempo de espera.")
         except Exception as exc:
-            job.update(status="failed", error=str(exc).replace(key, "***"))
+            job.update(status="failed", error=f"Error inesperado: {type(exc).__name__}")
         finally:
             job["ended"] = time.time()
+
+
+def read_photo(raw):
+    """Devuelve la lista detectada y la foto con las piezas marcadas."""
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    im.thumbnail((2000, 2000))
+    rgb = np.array(im)
+    pieces = V.detect(rgb)
+    marked = rgb.copy()
+    for p in pieces:
+        cv2.polylines(marked, [np.array(p["box"], np.int32)], True, (255, 0, 200), 5)
+    h, w = marked.shape[:2]
+    small = Image.fromarray(cv2.resize(marked, (760, int(760 * h / w))))
+    buf = io.BytesIO()
+    small.save(buf, "JPEG", quality=82)
+    return {"inventory": V.to_rows(pieces), "count": len(pieces),
+            "image": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}
+
+
+def suggest_ideas(rows):
+    """Pide 3 ideas a Claude. El diseño lo hace despues el agente."""
+    prompt = ("These are the LEGO bricks I own:\n" + B.inventory_prompt(rows) +
+              "\nSuggest 3 simple, clearly recognizable objects that could be built well using only these bricks. "
+              "Reply with only a JSON array of 3 short English noun phrases. Do not use any tools.")
+    out = subprocess.run([CLAUDE, "-p", prompt, "--model", MODEL, "--no-session-persistence", "--strict-mcp-config"],
+                         cwd=str(DEMO), env=child_env(), stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+                         encoding="utf8", errors="replace")
+    text = out.stdout or ""
+    match = re.search(r"\[.*\]", text, re.S)
+    if not match:
+        raise RuntimeError(text + (out.stderr or ""))
+    return [str(x)[:60] for x in json.loads(match[0])][:3]
 
 
 def thumb(rid):
@@ -166,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send((DEMO / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/api/state":
             rows = load_inventory()
-            return self.send({"inventory": rows, "key": read_key() is not None, "parts": B.PART_NAMES,
+            return self.send({"inventory": rows, "key": CLAUDE is not None, "parts": B.PART_NAMES,
                               "colors": {c: {"name": v[0], "hex": v[1]} for c, v in B.COLORS.items()}})
         if path == "/api/designs":
             inv = inv_map(load_inventory())
@@ -184,19 +293,37 @@ class Handler(BaseHTTPRequestHandler):
         self.send({"error": "no encontrado"}, code=404)
 
     def do_POST(self):
+        if self.path == "/api/photo":
+            length = int(self.headers.get("Content-Length", 0))
+            if not 0 < length <= 15_000_000:
+                return self.send({"error": "La foto debe pesar menos de 15 MB."}, code=400)
+            try:
+                return self.send(read_photo(self.rfile.read(length)))
+            except Exception:
+                return self.send({"error": "No se pudo leer esa imagen."}, code=400)
         size = min(int(self.headers.get("Content-Length", 0)), 100_000)
         try:
             data = json.loads(self.rfile.read(size) or b"{}")
+            if self.path == "/api/reset":
+                INV_FILE.unlink(missing_ok=True)
+                return self.send({"ok": True})
             if self.path == "/api/inventory":
                 rows = validate_rows(data["inventory"])
                 INV_FILE.write_text(json.dumps(rows, indent=1), encoding="utf8")
                 return self.send({"ok": True})
+            if self.path == "/api/ideas":
+                if not CLAUDE:
+                    return self.send({"error": "No encontré Claude Code en esta laptop."}, code=400)
+                try:
+                    return self.send({"ideas": suggest_ideas(load_inventory())})
+                except Exception as exc:
+                    return self.send({"error": friendly(str(exc)) or "No se pudieron obtener ideas."}, code=502)
             if self.path == "/api/generate":
                 request = " ".join(str(data.get("request", "")).split())[:80]
                 if not request:
                     return self.send({"error": "Escribe qué quieres construir."}, code=400)
-                if read_key() is None:
-                    return self.send({"error": "Falta la clave de API en .env."}, code=400)
+                if not CLAUDE:
+                    return self.send({"error": "No encontré Claude Code en esta laptop."}, code=400)
                 rows = load_inventory()
                 total = sum(r["qty"] for r in rows)
                 min_bricks = int(total * .8) if data.get("use_most") else None
@@ -211,5 +338,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     load_designs()
-    print(f"{len(designs)} diseños cargados. Abre http://127.0.0.1:8765", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()
+    port = int(os.environ.get("DEMO_PORT", "8765"))
+    print(f"{len(designs)} diseños cargados. Abre http://127.0.0.1:{port}", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

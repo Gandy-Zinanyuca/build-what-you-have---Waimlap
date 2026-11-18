@@ -66,17 +66,30 @@ svg{max-width:100%;height:auto;display:block}
 <button id="addb">Agregar</button>
 </div>
 <p class="note">La galería se actualiza según estas piezas.</p>
+<div class="total">
+<b>Leer desde una foto</b>
+<div class="add">
+<button type="button" id="cam">Tomar foto</button>
+<label for="ph" class="note" style="align-self:center">o subir una:</label>
+</div>
+<input type="file" id="ph" accept="image/*" capture="environment" style="margin-top:6px;max-width:100%">
+<p class="note">Mejor con piezas separadas, vista desde arriba y fondo liso de color.</p>
+<div id="phr"></div>
+</div>
+<div class="add"><button type="button" id="reset">Volver a mis 36 piezas</button></div>
 </section>
 </div>
 <div>
 <section aria-labelledby="h-req">
 <h2 id="h-req"><span class="step">2</span>¿Qué quieres construir?</h2>
-<p class="warn" id="nokey" hidden>La generación está desactivada: falta la clave de API en <code>.env</code>. La galería y el conteo sí funcionan.</p>
+<p class="warn" id="nokey" hidden>La generación está desactivada: no encontré Claude Code en esta laptop. La galería y el conteo sí funcionan.</p>
 <form id="f">
 <input type="text" id="req" maxlength="80" placeholder="Por ejemplo: un perro" aria-label="Pedido">
 <button class="pri" id="go">Diseñar</button>
+<button type="button" id="sur">Sorpréndeme</button>
 <label><input type="checkbox" id="most"> Aprovechar la mayoría de mis piezas</label>
 </form>
+<div id="ideas"></div>
 <div id="jobs"></div>
 </section>
 <section aria-labelledby="h-gal">
@@ -87,6 +100,12 @@ svg{max-width:100%;height:auto;display:block}
 </div>
 </main>
 <dialog id="dlg" aria-label="Detalle del diseño"><div id="dc"></div></dialog>
+<dialog id="camdlg" aria-label="Cámara">
+<h2>Apunta a las piezas desde arriba</h2>
+<video id="vid" autoplay playsinline muted style="width:100%;border-radius:10px;background:#000"></video>
+<div class="nav"><button class="pri" id="snap">Capturar</button><button id="camx">Cancelar</button><select id="camsel" aria-label="Cámara"></select></div>
+<p class="note" id="camnote"></p>
+</dialog>
 <script>
 const $=s=>document.querySelector(s), esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let S,D=[],group='Puedo armar',timer;
@@ -98,6 +117,35 @@ function drawInv(){
  $('#tot').textContent=`Total: ${S.inventory.reduce((a,r)=>a+r.qty,0)} piezas`;
 }
 async function saveInv(){await api('/api/inventory',{inventory:S.inventory});await loadD()}
+let stream=null;
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}}
+async function startCam(id){
+ stopCam();
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({video:id?{deviceId:{exact:id},width:{ideal:1920}}:{facingMode:'environment',width:{ideal:1920}}});
+  $('#vid').srcObject=stream;$('#camnote').textContent='';
+  const cams=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind=='videoinput');
+  const cur=stream.getVideoTracks()[0].getSettings().deviceId;
+  $('#camsel').innerHTML=cams.map((c,i)=>`<option value="${c.deviceId}" ${c.deviceId==cur?'selected':''}>${esc(c.label||'Cámara '+(i+1))}</option>`).join('');
+  $('#camsel').hidden=cams.length<2;
+ }catch(x){$('#camnote').textContent='No se pudo abrir la cámara: '+x.message}
+}
+$('#cam').onclick=()=>{$('#camdlg').showModal();startCam()};
+$('#camsel').onchange=e=>startCam(e.target.value);
+$('#camx').onclick=()=>{stopCam();$('#camdlg').close()};
+$('#camdlg').addEventListener('close',stopCam);
+$('#snap').onclick=()=>{const v=$('#vid');if(!v.videoWidth)return;const c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);
+ c.toBlob(b=>{stopCam();$('#camdlg').close();readPhoto(b)},'image/jpeg',.92)};
+$('#reset').onclick=async()=>{await api('/api/reset',{});S=await api('/api/state');drawInv();await loadD();$('#phr').innerHTML='<p class="note">Lista restaurada: tus 36 piezas.</p>'};
+$('#ph').onchange=e=>{const file=e.target.files[0];if(file)readPhoto(file)};
+async function readPhoto(file){$('#phr').innerHTML='<p class="note">Leyendo la foto…</p>';
+ try{const r=await fetch('/api/photo',{method:'POST',body:file});const j=await r.json();if(!r.ok)throw new Error(j.error);
+  $('#phr').innerHTML=`<img src="${j.image}" alt="Foto con las piezas detectadas marcadas" style="width:100%;border-radius:8px;margin-top:8px"><p><b>${j.count} piezas detectadas.</b></p><button id="useph">Usar esta lista</button><p class="note">Después corrige lo que haga falta con + y −.</p>`;
+  $('#useph').onclick=()=>{S.inventory=j.inventory;drawInv();saveInv();$('#phr').innerHTML='<p class="note">Lista actualizada. Revísala antes de diseñar.</p>'};
+ }catch(x){$('#phr').innerHTML=`<p class="note">${esc(x.message)}</p>`}}
+$('#sur').onclick=async()=>{$('#ideas').innerHTML='<p class="note">Pensando ideas…</p>';
+ try{const j=await api('/api/ideas',{});$('#ideas').innerHTML='<div class="filters" style="margin-top:12px">'+j.ideas.map(t=>`<button data-idea="${esc(t)}">${esc(t)}</button>`).join('')+'</div>'}catch(x){$('#ideas').innerHTML=`<p class="note">${esc(x.message)}</p>`}};
+$('#ideas').onclick=e=>{const b=e.target.closest('button[data-idea]');if(b){$('#req').value=b.dataset.idea;$('#req').focus()}};
 $('#inv').onclick=e=>{const b=e.target.closest('button');if(!b)return;const r=S.inventory[+b.dataset.i];r.qty=Math.max(0,r.qty+ +b.dataset.d);drawInv();saveInv()};
 $('#addb').onclick=()=>{const part=$('#np').value,color=+$('#nc').value;let r=S.inventory.find(x=>x.part==part&&x.color==color);if(r)r.qty++;else S.inventory.push({part,color,qty:1});drawInv();saveInv()};
 
@@ -146,7 +194,7 @@ $('#f').onsubmit=async e=>{e.preventDefault();const request=$('#req').value.trim
  S=await api('/api/state');drawInv();
  $('#np').innerHTML=Object.entries(S.parts).map(([p,n])=>`<option value="${p}">${n}</option>`).join('');
  $('#nc').innerHTML=Object.entries(S.colors).map(([c,v])=>`<option value="${c}">${v.name}</option>`).join('');
- if(!S.key){$('#nokey').hidden=false;$('#go').disabled=true}
+ if(!S.key){$('#nokey').hidden=false;$('#go').disabled=true;$('#sur').disabled=true}
  await loadD();loadJ();
 })();
 </script>

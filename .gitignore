@@ -5,11 +5,17 @@
 .venv/
 __pycache__/
 *.pyc
+ldraw_complete.zip
 
-# Biblioteca LDraw (se descarga aparte)
+# Biblioteca LDraw (se descarga aparte con tools/get_ldraw.py)
 ldraw/
 
 # Generado por la demo
 demo/cache/
 demo/records_live/
 demo/inventario.json
+demo/inventario_respaldo*.json
+
+# Configuracion local de herramientas de diseño
+.impeccable/
+demo/.impeccable/

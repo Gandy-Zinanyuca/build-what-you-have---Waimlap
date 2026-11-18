@@ -84,3 +84,36 @@ def inventory_prompt(rows, min_bricks=None):
     if min_bricks:
         lines.append(f"You must use at least {min_bricks} of these {total} bricks, while keeping the object recognizable.")
     return "\n".join(lines)
+
+
+def add_inventory_test(source, rows, min_bricks=None):
+    """Agrega a build.py una prueba que avisa al agente que piezas se pasan del inventario."""
+    marker = "    return tests.report()"
+    if source.count(marker) != 1 or "def create_build" not in source:
+        return source
+    entries = ", ".join(
+        f'bl.Element("{r["part"]}", bl.Color.{COLORS[r["color"]][2]}): {r["qty"]}' for r in rows if r["qty"] > 0
+    )
+    header = f"""from collections import Counter
+
+INVENTORY = Counter({{{entries}}})
+MIN_BRICKS = {min_bricks or 0}
+
+
+def check_inventory(build):
+    used = build.list_elements()
+    over = {{e: n - INVENTORY[e] for e, n in used.items() if n > INVENTORY[e]}}
+    total = sum(used.values())
+    if over or total < MIN_BRICKS:
+        left = {{e: INVENTORY[e] - used[e] for e in INVENTORY if INVENTORY[e] > used[e]}}
+        parts = [f"used {{total}} bricks, need at least {{MIN_BRICKS}}"]
+        if over:
+            parts.append("OVER LIMIT, remove: " + "; ".join(f"{{n}} x {{e}}" for e, n in over.items()))
+        parts.append("AVAILABLE: " + "; ".join(f"{{n}} x {{e}}" for e, n in left.items()))
+        return False, ". ".join(parts)
+    return True, f"used {{total}} bricks"
+
+
+"""
+    source = source.replace("def create_build", header + "def create_build", 1)
+    return source.replace(marker, '    tests.check("inventory", *check_inventory(build))\n' + marker)
